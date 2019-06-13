@@ -10,6 +10,7 @@ import (
 
 	"github.com/sbreitf1/errors"
 	"golang.org/x/crypto/openpgp"
+	pgperr "golang.org/x/crypto/openpgp/errors"
 )
 
 var (
@@ -17,12 +18,22 @@ var (
 	ErrTechnicalProblem = errors.New("Technical error")
 	// ErrNoKeySpecified occurs when a mandatory key is not specified.
 	ErrNoKeySpecified = errors.New("No key specified")
+	// ErrNoPrivateKey occurs when a public key is supplied, but a private key is expected.
+	ErrNoPrivateKey = errors.New("Require private key")
+	// ErrWrongKey occurs when a wrong key is used for decrypting or signature checking.
+	ErrWrongKey = errors.New("Wrong key")
 	// ErrKeySourceNotAccepted occurs on importing a disabled key source (See gpgutil.AcceptFileKeySources and gpgutil.AcceptNamedKeySources)
 	ErrKeySourceNotAccepted = errors.New("Key source %q not accepted")
 	// ErrImportKeyFailed occurs when a specified key could not be imported.
 	ErrImportKeyFailed = errors.New("Failed to import key")
 	// ErrDecryptKeyFailed occurs when a specified key was imported but could not be decrypted.
 	ErrDecryptKeyFailed = errors.New("Failed to decrypt key")
+	// ErrWrongSignatureVerificationKey occurs when the key for signature verification does not match the signer.
+	ErrWrongSignatureVerificationKey = errors.New("Wrong key for signature verification")
+	// ErrWrongSignature occurs when a signature does not verify the given message.
+	ErrWrongSignature = errors.New("Wrong signature")
+	// ErrMissingSignature occurs when a signature was expected but does not exist.
+	ErrMissingSignature = errors.New("Missing signature")
 	// ErrGPG occurs on all cryptography related errors.
 	ErrGPG = errors.New("A cryptographic method failed")
 )
@@ -43,7 +54,7 @@ func init() {
 }
 
 // EncryptAndSignFile encrypts and signs the given file using the given GPG keys and applies GZIP compression.
-func EncryptAndSignFile(inFile, outFile string, encryptKeySrc KeySource, signKeySrc KeySource) errors.Error {
+func EncryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource) errors.Error {
 	if !signKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No signing key specified").Make()
 	}
@@ -55,7 +66,7 @@ func EncryptFile(inFile, outFile string, encryptKeySrc KeySource) errors.Error {
 	return encryptAndSignFile(inFile, outFile, encryptKeySrc, MakeEmptyKeySource())
 }
 
-func encryptAndSignFile(inFile, outFile string, encryptKeySrc KeySource, signKeySrc KeySource) errors.Error {
+func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource) errors.Error {
 	if !encryptKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No encryption key specified").Make()
 	}
@@ -65,17 +76,18 @@ func encryptAndSignFile(inFile, outFile string, encryptKeySrc KeySource, signKey
 		return ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
 	}
 
-	encryptKey, err := importKeySource(encryptKeySrc, false)
-	if err != nil {
-		return errors.Wrap(err)
+	encryptKey, importErr := importKeySource(encryptKeySrc, false)
+	if importErr != nil {
+		return importErr.Expand("Could not import encryption key")
 	}
 
 	var signKey *openpgp.Entity
 	if signKeySrc.HasValue() {
 		key, err := importKeySource(signKeySrc, true)
 		if err != nil {
-			return err.Expand("Could not import sign key")
+			return err.Expand("Could not import signing key")
 		}
+		//TODO assert len=1
 		signKey = key[0]
 	}
 
@@ -115,9 +127,9 @@ func ComputeDetachedSignature(inFile, outFile string, keySrc KeySource) errors.E
 		return ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
 	}
 
-	key, err := importKeySource(keySrc, true)
-	if err != nil {
-		return errors.Wrap(err)
+	key, importErr := importKeySource(keySrc, true)
+	if importErr != nil {
+		return importErr.Expand("Could not import signing key")
 	}
 
 	writer, err := os.Create(outFile)
@@ -128,6 +140,87 @@ func ComputeDetachedSignature(inFile, outFile string, keySrc KeySource) errors.E
 
 	if err := openpgp.DetachSign(writer, key[0], reader, nil); err != nil {
 		return ErrGPG.Msg("Failed to generate detached signature").Make().Cause(err)
+	}
+
+	return nil
+}
+
+// DecryptFileAndCheckSignature decrypts a gzipped gpg file and checks the signature.
+func DecryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource) errors.Error {
+	if !signKeySrc.HasValue() {
+		return ErrNoKeySpecified.Msg("No signature key specified").Make()
+	}
+	return decryptFileAndCheckSignature(inFile, outFile, decryptKeySrc, signKeySrc)
+}
+
+// DecryptFile decrypts a gzipped gpg file.
+func DecryptFile(inFile, outFile string, keySrc KeySource) errors.Error {
+	return decryptFileAndCheckSignature(inFile, outFile, keySrc, MakeEmptyKeySource())
+}
+
+func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource) errors.Error {
+	if !decryptKeySrc.HasValue() {
+		return ErrNoKeySpecified.Msg("No decryption key specified").Make()
+	}
+
+	reader, err := os.Open(inFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
+	}
+
+	decryptKey, importErr := importKeySource(decryptKeySrc, true)
+	if importErr != nil {
+		return importErr.Expand("Could not import decryption key")
+	}
+
+	keyRing := decryptKey
+	var signKey *openpgp.Entity
+	if signKeySrc.HasValue() {
+		key, err := importKeySource(signKeySrc, false)
+		if err != nil {
+			return err.Expand("Could not import signature key")
+		}
+		//TODO assert len=1
+		signKey = key[0]
+		keyRing = append(keyRing, signKey)
+	}
+
+	writer, err := os.Create(outFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
+	}
+	defer writer.Close()
+
+	msg, err := openpgp.ReadMessage(reader, keyRing, nil, nil)
+	if err != nil {
+		if err == pgperr.ErrKeyIncorrect {
+			return ErrWrongKey.Make()
+		}
+		return ErrGPG.Msg("Failed to read encrypted message").Make().Cause(err)
+	}
+
+	if signKey != nil {
+		if !msg.IsSigned {
+			return ErrMissingSignature.Make()
+		}
+		if msg.SignedBy == nil || msg.SignedBy.PublicKey.Fingerprint != signKey.PrimaryKey.Fingerprint {
+			return ErrWrongSignatureVerificationKey.Make()
+		}
+	}
+
+	gzipReader, err := gzip.NewReader(msg.UnverifiedBody)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
+	}
+
+	if _, err := io.Copy(writer, gzipReader); err != nil {
+		return ErrTechnicalProblem.Msg("Failed to decrypt and unzip file").Make().Cause(err)
+	}
+
+	if signKey != nil {
+		if msg.SignatureError != nil {
+			return ErrWrongSignature.Make().Cause(msg.SignatureError)
+		}
 	}
 
 	return nil
@@ -161,6 +254,18 @@ func importKeySource(src KeySource, privateKey bool) (openpgp.EntityList, errors
 			if err := decryptKey(key[i], src.Passphrase); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	if privateKey {
+		privateKeyCount := 0
+		for i := range key {
+			if key[i].PrivateKey != nil {
+				privateKeyCount++
+			}
+		}
+		if privateKeyCount == 0 {
+			return nil, ErrNoPrivateKey.Make()
 		}
 	}
 
