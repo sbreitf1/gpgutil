@@ -47,6 +47,10 @@ var (
 	AcceptNamedKeySources bool
 )
 
+type Options struct {
+	GZIP bool
+}
+
 func init() {
 	GPGCommand = "gpg"
 	AcceptFileKeySources = true
@@ -54,19 +58,19 @@ func init() {
 }
 
 // EncryptAndSignFile encrypts and signs the given file using the given GPG keys and applies GZIP compression.
-func EncryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource) errors.Error {
+func EncryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !signKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No signing key specified").Make()
 	}
-	return encryptAndSignFile(inFile, outFile, encryptKeySrc, signKeySrc)
+	return encryptAndSignFile(inFile, outFile, encryptKeySrc, signKeySrc, options)
 }
 
 // EncryptFile encrypts the given file using the given GPG keys and applies GZIP compression.
-func EncryptFile(inFile, outFile string, encryptKeySrc KeySource) errors.Error {
-	return encryptAndSignFile(inFile, outFile, encryptKeySrc, MakeEmptyKeySource())
+func EncryptFile(inFile, outFile string, encryptKeySrc KeySource, options *Options) errors.Error {
+	return encryptAndSignFile(inFile, outFile, encryptKeySrc, MakeEmptyKeySource(), options)
 }
 
-func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource) errors.Error {
+func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !encryptKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No encryption key specified").Make()
 	}
@@ -102,14 +106,18 @@ func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySou
 		return ErrGPG.Msg("Failed to encrypt file").Make().Cause(err)
 	}
 	defer pgpWriter.Close()
+	dstWriter := pgpWriter
 
-	gzipWriter, err := gzip.NewWriterLevel(pgpWriter, 9)
-	if err != nil {
-		return ErrTechnicalProblem.Msg("Unable to open gzip writer").Make().Cause(err)
+	if options != nil && options.GZIP {
+		gzipWriter, err := gzip.NewWriterLevel(dstWriter, 9)
+		if err != nil {
+			return ErrTechnicalProblem.Msg("Unable to open gzip writer").Make().Cause(err)
+		}
+		defer gzipWriter.Close()
+		dstWriter = gzipWriter
 	}
-	defer gzipWriter.Close()
 
-	if _, err := io.Copy(gzipWriter, reader); err != nil {
+	if _, err := io.Copy(dstWriter, reader); err != nil {
 		return ErrTechnicalProblem.Msg("Failed to write encrypted and gzipped file").Make().Cause(err)
 	}
 
@@ -146,19 +154,19 @@ func ComputeDetachedSignature(inFile, outFile string, keySrc KeySource) errors.E
 }
 
 // DecryptFileAndCheckSignature decrypts a gzipped gpg file and checks the signature.
-func DecryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource) errors.Error {
+func DecryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !signKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No signature key specified").Make()
 	}
-	return decryptFileAndCheckSignature(inFile, outFile, decryptKeySrc, signKeySrc)
+	return decryptFileAndCheckSignature(inFile, outFile, decryptKeySrc, signKeySrc, options)
 }
 
 // DecryptFile decrypts a gzipped gpg file.
-func DecryptFile(inFile, outFile string, keySrc KeySource) errors.Error {
-	return decryptFileAndCheckSignature(inFile, outFile, keySrc, MakeEmptyKeySource())
+func DecryptFile(inFile, outFile string, keySrc KeySource, options *Options) errors.Error {
+	return decryptFileAndCheckSignature(inFile, outFile, keySrc, MakeEmptyKeySource(), options)
 }
 
-func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource) errors.Error {
+func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !decryptKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No decryption key specified").Make()
 	}
@@ -207,13 +215,17 @@ func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKey
 			return ErrWrongSignatureVerificationKey.Make()
 		}
 	}
+	srcReader := msg.UnverifiedBody
 
-	gzipReader, err := gzip.NewReader(msg.UnverifiedBody)
-	if err != nil {
-		return ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
+	if options != nil && options.GZIP {
+		gzipReader, err := gzip.NewReader(srcReader)
+		if err != nil {
+			return ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
+		}
+		srcReader = gzipReader
 	}
 
-	if _, err := io.Copy(writer, gzipReader); err != nil {
+	if _, err := io.Copy(writer, srcReader); err != nil {
 		return ErrTechnicalProblem.Msg("Failed to decrypt and unzip file").Make().Cause(err)
 	}
 

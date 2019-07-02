@@ -20,8 +20,8 @@ func TestEncryptDecrypt(t *testing.T) {
 	content := []byte("foo bar")
 	ioutil.WriteFile(inFile, content, os.ModePerm)
 
-	assert.NoError(t, EncryptFile(inFile, encFile, MakeFileKeySource(res("user1-pub.asc"), "")))
-	assert.NoError(t, DecryptFile(encFile, decFile, MakeFileKeySource(res("user1-priv.asc"), "test")))
+	assert.NoError(t, EncryptFile(inFile, encFile, MakeFileKeySource(res("user1-pub.asc"), ""), &Options{GZIP: true}))
+	assert.NoError(t, DecryptFile(encFile, decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), &Options{GZIP: true}))
 
 	data, err := ioutil.ReadFile(decFile)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestEncryptNoKey(t *testing.T) {
 	content := []byte("foo bar")
 	ioutil.WriteFile(inFile, content, os.ModePerm)
 
-	err := EncryptFile(inFile, encFile, MakeEmptyKeySource())
+	err := EncryptFile(inFile, encFile, MakeEmptyKeySource(), nil)
 	assertError(t, ErrNoKeySpecified, err)
 }
 
@@ -49,7 +49,7 @@ func TestEncryptInvalidFile(t *testing.T) {
 	defer tmp.Close()
 	encFile := tmp.File()
 
-	err := EncryptFile(res("totallynonexisting"), encFile, MakeFileKeySource(res("user1-priv.asc"), "test"))
+	err := EncryptFile(res("totallynonexisting"), encFile, MakeFileKeySource(res("user1-priv.asc"), "test"), nil)
 	assertError(t, ErrTechnicalProblem, err)
 }
 
@@ -62,7 +62,7 @@ func TestEncryptInvalidKey(t *testing.T) {
 	content := []byte("foo bar")
 	ioutil.WriteFile(inFile, content, os.ModePerm)
 
-	err := EncryptFile(inFile, encFile, MakeFileKeySource(res("non-existing-key.asc"), "test"))
+	err := EncryptFile(inFile, encFile, MakeFileKeySource(res("non-existing-key.asc"), "test"), nil)
 	assertError(t, ErrTechnicalProblem, err)
 }
 
@@ -71,7 +71,7 @@ func TestDecrypt(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	assert.NoError(t, DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test")))
+	assert.NoError(t, DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), &Options{GZIP: true}))
 
 	data, err := ioutil.ReadFile(decFile)
 	if err != nil {
@@ -85,7 +85,7 @@ func TestDecryptWrongKeyPassphrase(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "wrongpass"))
+	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "wrongpass"), nil)
 	assertError(t, ErrDecryptKeyFailed, err)
 }
 
@@ -94,7 +94,7 @@ func TestDecryptWrongKey(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user2-priv.asc"), "asdf"))
+	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user2-priv.asc"), "asdf"), nil)
 	assertError(t, ErrWrongKey, err)
 }
 
@@ -103,7 +103,7 @@ func TestDecryptPublicKey(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user2-pub.asc"), ""))
+	err := DecryptFile(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user2-pub.asc"), ""), nil)
 	assertError(t, ErrNoPrivateKey, err)
 }
 
@@ -117,8 +117,8 @@ func TestEncryptSignDecryptCheck(t *testing.T) {
 	content := []byte("foo bar")
 	ioutil.WriteFile(inFile, content, os.ModePerm)
 
-	assert.NoError(t, EncryptAndSignFile(inFile, encFile, MakeFileKeySource(res("user1-pub.asc"), ""), MakeFileKeySource(res("user2-priv.asc"), "asdf")))
-	assert.NoError(t, DecryptFileAndCheckSignature(encFile, decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user2-pub.asc"), "")))
+	assert.NoError(t, EncryptAndSignFile(inFile, encFile, MakeFileKeySource(res("user1-pub.asc"), ""), MakeFileKeySource(res("user2-priv.asc"), "asdf"), nil))
+	assert.NoError(t, DecryptFileAndCheckSignature(encFile, decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user2-pub.asc"), ""), nil))
 
 	data, err := ioutil.ReadFile(decFile)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestDecryptCheck(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	assert.NoError(t, DecryptFileAndCheckSignature(res("testdata-enc1-sig2.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user2-pub.asc"), "")))
+	assert.NoError(t, DecryptFileAndCheckSignature(res("testdata-enc1-sig2.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user2-pub.asc"), ""), &Options{GZIP: true}))
 
 	data, err := ioutil.ReadFile(decFile)
 	if err != nil {
@@ -146,7 +146,7 @@ func TestDecryptCheckWrongSigner(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	err := DecryptFileAndCheckSignature(res("testdata-enc1-sig2.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user3-pub.asc"), ""))
+	err := DecryptFileAndCheckSignature(res("testdata-enc1-sig2.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user3-pub.asc"), ""), nil)
 	assertError(t, ErrWrongSignatureVerificationKey, err)
 }
 
@@ -155,7 +155,7 @@ func TestDecryptCheckMissingSignature(t *testing.T) {
 	defer tmp.Close()
 	decFile := tmp.File()
 
-	err := DecryptFileAndCheckSignature(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user3-pub.asc"), ""))
+	err := DecryptFileAndCheckSignature(res("testdata-enc1.gpg"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), MakeFileKeySource(res("user3-pub.asc"), ""), nil)
 	assertError(t, ErrMissingSignature, err)
 }
 
