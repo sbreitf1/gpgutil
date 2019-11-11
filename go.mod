@@ -1,4 +1,4 @@
-module github.com/danielb42/gpgutil
+module github.com/sbreitf1/gpgutil
 
 require (
 	github.com/sbreitf1/errors v0.0.0-20190612091543-8896323c9673
