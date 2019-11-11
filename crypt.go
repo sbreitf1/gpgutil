@@ -219,11 +219,10 @@ func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKey
 	srcReader := msg.UnverifiedBody
 
 	if options != nil && options.GZIP {
-		srcReader, err := gzip.NewReader(srcReader)
+		srcReader, err = gzip.NewReader(srcReader)
 		if err != nil {
 			return nil, ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
 		}
-		defer srcReader.Close()
 	}
 
 	if signKey != nil {
