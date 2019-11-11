@@ -80,6 +80,12 @@ func TestDecrypt(t *testing.T) {
 	assert.Equal(t, "foo bar", string(data))
 }
 
+func TestDecryptToByteSlice(t *testing.T) {
+	data, err := DecryptFileToByteSlice(res("testdata-enc1.gpg"), MakeFileKeySource(res("user1-priv.asc"), "test"), &Options{GZIP: true})
+	assert.NoError(t, err)
+	assert.Equal(t, "foo bar", string(data))
+}
+
 func TestDecryptWrongKeyPassphrase(t *testing.T) {
 	tmp := newTempProvider()
 	defer tmp.Close()
