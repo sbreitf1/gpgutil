@@ -80,6 +80,20 @@ func TestDecrypt(t *testing.T) {
 	assert.Equal(t, "foo bar", string(data))
 }
 
+func TestEncryptToByteSlice(t *testing.T) {
+	tmp := newTempProvider()
+	defer tmp.Close()
+	decFile := tmp.File()
+
+	assert.NoError(t, EncryptByteSliceToFile([]byte("some test data"), decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), nil))
+
+	data, err := DecryptFileToByteSlice(decFile, MakeFileKeySource(res("user1-priv.asc"), "test"), nil)
+	if err != nil {
+		panic(err)
+	}
+	assert.Equal(t, "some test data", string(data))
+}
+
 func TestDecryptToByteSlice(t *testing.T) {
 	data, err := DecryptFileToByteSlice(res("testdata-enc1.gpg"), MakeFileKeySource(res("user1-priv.asc"), "test"), &Options{GZIP: true})
 	assert.NoError(t, err)

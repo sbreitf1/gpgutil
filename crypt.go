@@ -47,8 +47,10 @@ var (
 	AcceptNamedKeySources bool
 )
 
+// Options define additional parameters
 type Options struct {
-	GZIP bool
+	GZIP         bool
+	SignatureKey KeySource
 }
 
 func init() {
@@ -58,26 +60,55 @@ func init() {
 }
 
 // EncryptAndSignFile encrypts and signs the given file using the given GPG keys and applies GZIP compression.
+//
+// DEPRECATED: Use EncryptFile(... &Options{SignatureKey: SignKeySource}) instead.
 func EncryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !signKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No signing key specified").Make()
 	}
-	return encryptAndSignFile(inFile, outFile, encryptKeySrc, signKeySrc, options)
-}
-
-// EncryptFile encrypts the given file using the given GPG keys and applies GZIP compression.
-func EncryptFile(inFile, outFile string, encryptKeySrc KeySource, options *Options) errors.Error {
-	return encryptAndSignFile(inFile, outFile, encryptKeySrc, MakeEmptyKeySource(), options)
-}
-
-func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
-	if !encryptKeySrc.HasValue() {
-		return ErrNoKeySpecified.Msg("No encryption key specified").Make()
+	if options == nil {
+		options = &Options{SignatureKey: signKeySrc}
+	} else {
+		if signKeySrc.HasValue() {
+			options.SignatureKey = signKeySrc
+		}
 	}
+	return EncryptFile(inFile, outFile, encryptKeySrc, options)
+}
 
+// EncryptFile encrypts the given file using the given GPG keys.
+func EncryptFile(inFile, outFile string, encryptKeySrc KeySource, options *Options) errors.Error {
 	reader, err := os.Open(inFile)
 	if err != nil {
 		return ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
+	}
+	defer reader.Close()
+
+	writer, err := os.Create(outFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
+	}
+	defer writer.Close()
+
+	return encrypt(reader, writer, encryptKeySrc, options)
+}
+
+// EncryptByteSliceToFile encrypts a byte slice and writes the data to a file.
+func EncryptByteSliceToFile(data []byte, outFile string, keySrc KeySource, options *Options) errors.Error {
+	reader := bytes.NewReader(data)
+
+	writer, err := os.Create(outFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
+	}
+	defer writer.Close()
+
+	return encrypt(reader, writer, keySrc, options)
+}
+
+func encrypt(reader io.Reader, writer io.Writer, encryptKeySrc KeySource, options *Options) errors.Error {
+	if !encryptKeySrc.HasValue() {
+		return ErrNoKeySpecified.Msg("No encryption key specified").Make()
 	}
 
 	encryptKey, importErr := importKeySource(encryptKeySrc, false)
@@ -86,20 +117,14 @@ func encryptAndSignFile(inFile, outFile string, encryptKeySrc, signKeySrc KeySou
 	}
 
 	var signKey *openpgp.Entity
-	if signKeySrc.HasValue() {
-		key, err := importKeySource(signKeySrc, true)
+	if options != nil && options.SignatureKey.HasValue() {
+		key, err := importKeySource(options.SignatureKey, true)
 		if err != nil {
 			return err.Expand("Could not import signing key")
 		}
 		//TODO assert len=1
 		signKey = key[0]
 	}
-
-	writer, err := os.Create(outFile)
-	if err != nil {
-		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
-	}
-	defer writer.Close()
 
 	pgpWriter, err := openpgp.Encrypt(writer, encryptKey, signKey, &openpgp.FileHints{}, nil)
 	if err != nil {
@@ -153,46 +178,77 @@ func ComputeDetachedSignature(inFile, outFile string, keySrc KeySource) errors.E
 	return nil
 }
 
-// DecryptFileAndCheckSignature decrypts a gzipped gpg file and checks the signature.
+// DecryptFile decrypts a gpg file.
+func DecryptFile(inFile, outFile string, keySrc KeySource, options *Options) errors.Error {
+	reader, err := os.Open(inFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
+	}
+	defer reader.Close()
+
+	writer, err := os.Create(outFile)
+	if err != nil {
+		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
+	}
+	defer writer.Close()
+
+	if err := decrypt(reader, writer, keySrc, options); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// DecryptFileAndCheckSignature decrypts a gpg file and checks the signature.
+//
+// DEPRECATED: Use DecryptFile(... &Options{SignatureKey: SignKeySource}) instead.
 func DecryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource, options *Options) errors.Error {
 	if !signKeySrc.HasValue() {
 		return ErrNoKeySpecified.Msg("No signature key specified").Make()
 	}
-	_, err := decryptFileAndCheckSignature(inFile, outFile, decryptKeySrc, signKeySrc, options)
-	return err
-}
-
-// DecryptFile decrypts a gzipped gpg file.
-func DecryptFile(inFile, outFile string, keySrc KeySource, options *Options) errors.Error {
-	_, err := decryptFileAndCheckSignature(inFile, outFile, keySrc, MakeEmptyKeySource(), options)
-	return err
-}
-
-func DecryptFileToByteSlice(inFile string, keySrc KeySource, options *Options) ([]byte, errors.Error) {
-	return decryptFileAndCheckSignature(inFile, "", keySrc, MakeEmptyKeySource(), options)
-}
-
-func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKeySrc KeySource, options *Options) ([]byte, errors.Error) {
-	if !decryptKeySrc.HasValue() {
-		return nil, ErrNoKeySpecified.Msg("No decryption key specified").Make()
+	if options == nil {
+		options = &Options{SignatureKey: signKeySrc}
+	} else {
+		if signKeySrc.HasValue() {
+			options.SignatureKey = signKeySrc
+		}
 	}
+	return DecryptFile(inFile, outFile, decryptKeySrc, options)
+}
 
+// DecryptFileToByteSlice decrypts a gpg file and returns the data as byte slice.
+func DecryptFileToByteSlice(inFile string, keySrc KeySource, options *Options) ([]byte, errors.Error) {
 	reader, err := os.Open(inFile)
 	if err != nil {
 		return nil, ErrTechnicalProblem.Msg("Could not open input file").Make().Cause(err)
 	}
+	defer reader.Close()
+
+	writer := bytes.NewBuffer(nil)
+
+	if err := decrypt(reader, writer, keySrc, options); err != nil {
+		return nil, err
+	}
+
+	return writer.Bytes(), nil
+}
+
+func decrypt(reader io.Reader, writer io.Writer, decryptKeySrc KeySource, options *Options) errors.Error {
+	if !decryptKeySrc.HasValue() {
+		return ErrNoKeySpecified.Msg("No decryption key specified").Make()
+	}
 
 	decryptKey, importErr := importKeySource(decryptKeySrc, true)
 	if importErr != nil {
-		return nil, importErr.Expand("Could not import decryption key")
+		return importErr.Expand("Could not import decryption key")
 	}
 
 	keyRing := decryptKey
 	var signKey *openpgp.Entity
-	if signKeySrc.HasValue() {
-		key, err := importKeySource(signKeySrc, false)
+	if options != nil && options.SignatureKey.HasValue() {
+		key, err := importKeySource(options.SignatureKey, false)
 		if err != nil {
-			return nil, err.Expand("Could not import signature key")
+			return err.Expand("Could not import signature key")
 		}
 		//TODO assert len=1
 		signKey = key[0]
@@ -202,17 +258,17 @@ func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKey
 	msg, err := openpgp.ReadMessage(reader, keyRing, nil, nil)
 	if err != nil {
 		if err == pgperr.ErrKeyIncorrect {
-			return nil, ErrWrongKey.Make()
+			return ErrWrongKey.Make()
 		}
-		return nil, ErrGPG.Msg("Failed to read encrypted message").Make().Cause(err)
+		return ErrGPG.Msg("Failed to read encrypted message").Make().Cause(err)
 	}
 
 	if signKey != nil {
 		if !msg.IsSigned {
-			return nil, ErrMissingSignature.Make()
+			return ErrMissingSignature.Make()
 		}
 		if msg.SignedBy == nil || msg.SignedBy.PublicKey.Fingerprint != signKey.PrimaryKey.Fingerprint {
-			return nil, ErrWrongSignatureVerificationKey.Make()
+			return ErrWrongSignatureVerificationKey.Make()
 		}
 	}
 
@@ -221,33 +277,15 @@ func decryptFileAndCheckSignature(inFile, outFile string, decryptKeySrc, signKey
 	if options != nil && options.GZIP {
 		srcReader, err = gzip.NewReader(srcReader)
 		if err != nil {
-			return nil, ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
+			return ErrTechnicalProblem.Msg("Unable to open gzip reader").Make().Cause(err)
 		}
 	}
 
 	if signKey != nil {
 		if msg.SignatureError != nil {
-			return nil, ErrWrongSignature.Make().Cause(msg.SignatureError)
+			return ErrWrongSignature.Make().Cause(msg.SignatureError)
 		}
 	}
-
-	if len(outFile) > 0 {
-		return nil, writeToFile(srcReader, outFile)
-	} else {
-		decryptedBytes, err := ioutil.ReadAll(srcReader)
-		if err != nil {
-			return nil, ErrTechnicalProblem.Msg("Unable to read stream of decrypted message").Make().Cause(err)
-		}
-		return decryptedBytes, nil
-	}
-}
-
-func writeToFile(srcReader io.Reader, outFile string) errors.Error {
-	writer, err := os.Create(outFile)
-	if err != nil {
-		return ErrTechnicalProblem.Msg("Could not create output file").Make().Cause(err)
-	}
-	defer writer.Close()
 
 	if _, err := io.Copy(writer, srcReader); err != nil {
 		return ErrTechnicalProblem.Msg("Failed to decrypt and unzip file").Make().Cause(err)
